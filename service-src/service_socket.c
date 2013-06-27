@@ -40,7 +40,6 @@ struct socket {
 struct socket_pool {
 	int fd;
 	struct event ev[MAX_EVENT];
-	int poll;
 	int id;
 	int count;
 	int cap;
@@ -260,7 +259,7 @@ forward(struct skynet_context * context, struct socket *s, struct socket_pool *p
 	if (s->status == STATUS_HALFCLOSE) {
 		free(buffer);
 	} else {
-		skynet_send(context, 0, s->source, PTYPE_CLIENT, 0, buffer, r + 4);
+		skynet_send(context, 0, s->source, PTYPE_CLIENT | PTYPE_TAG_DONTCOPY, 0, buffer, r + 4);
 	}
 }
 
