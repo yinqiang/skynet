@@ -20,8 +20,7 @@ local meta = {
 
 function redis.connect(dbname)
 	local db_conf   =   name[dbname]
-	local fd = socket.open(db_conf.host, db_conf.port or 6379)
-	assert(fd)
+	local fd = assert(socket.open(db_conf.host, db_conf.port or 6379))
 	local r = setmetatable( { __handle = fd, __mode = false }, meta )
 	if db_conf.db ~= nil then
 		r:select(db_conf.db)
@@ -136,6 +135,7 @@ end
 
 function command:sismember(key, value)
 	assert(not self.__mode, "sismember can't used in batch mode")
+	local fd = self.__handle
 	socket.lock(fd)
 	socket.write(fd, compose_message { "SISMEMBER", key, value })
 	local ok, ismember = read_response(fd)
@@ -155,8 +155,8 @@ function command:batch(mode)
 				allok = allok and ok
 				allret[i] = ret
 			end
-			assert(allok, "batch read failed")
 			socket.unlock(self.__handle)
+			assert(allok, "batch read failed")
 			self.__mode = false
 			return allret
 		else
