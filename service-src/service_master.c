@@ -119,6 +119,7 @@ _connect_to(struct master *m, int id) {
 	memcpy(tmp,ipaddress,sz);
 	tmp[sz] = '\0';
 	int port = strtol(portstr+1,NULL,10);
+	skynet_error(ctx, "Master connect to harbor(%d) %s:%d", id, tmp, port);
 	m->remote_fd[id] = skynet_socket_connect(ctx, tmp, port);
 }
 
@@ -186,6 +187,7 @@ _update_address(struct master *m, int harbor_id, const char * buffer, size_t sz)
 	if (m->remote_fd[harbor_id] >= 0) {
 		skynet_socket_close(context, m->remote_fd[harbor_id]);
 		m->remote_fd[harbor_id] = -1;
+		m->connected[harbor_id] = false;
 	}
 	free(m->remote_addr[harbor_id]);
 	char * addr = malloc(sz+1);

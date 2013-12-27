@@ -59,7 +59,7 @@ lnewpool(lua_State *L, int sz) {
 	}
 	lua_setmetatable(L, -2);
 	return 1;
-};
+}
 
 static int
 lnewbuffer(lua_State *L) {
@@ -133,6 +133,7 @@ lpushbuffer(lua_State *L) {
 static void
 return_free_node(lua_State *L, int pool, struct socket_buffer *sb) {
 	struct buffer_node *free_node = sb->head;
+	sb->offset = 0;
 	sb->head = free_node->next;
 	if (sb->head == NULL) {
 		sb->tail = NULL;
@@ -158,7 +159,6 @@ pop_lstring(lua_State *L, struct socket_buffer *sb, int sz, int skip) {
 	}
 	if (sz == current->sz - sb->offset) {
 		lua_pushlstring(L, current->msg + sb->offset, sz-skip);
-		sb->offset = 0;
 		return_free_node(L,2,sb);
 		return;
 	}
@@ -174,13 +174,11 @@ pop_lstring(lua_State *L, struct socket_buffer *sb, int sz, int skip) {
 			sb->offset += sz;
 			if (bytes == sz) {
 				return_free_node(L,2,sb);
-				sb->offset = 0;
 			}
 			break;
 		}
 		luaL_addlstring(&b, current->msg + sb->offset, (sz - skip < bytes) ? sz - skip : bytes);
 		return_free_node(L,2,sb);
-		sb->offset = 0;
 		sz-=bytes;
 		if (sz==0)
 			break;
@@ -397,6 +395,9 @@ llisten(lua_State *L) {
 	int backlog = luaL_optinteger(L,3,BACKLOG);
 	struct skynet_context * ctx = lua_touserdata(L, lua_upvalueindex(1));
 	int id = skynet_socket_listen(ctx, host,port,backlog);
+	if (id < 0) {
+		return luaL_error(L, "Listen error");
+	}
 
 	lua_pushinteger(L,id);
 	return 1;
@@ -419,7 +420,7 @@ lsend(lua_State *L) {
 		sz = (int)len;
 	}
 	int err = skynet_socket_send(ctx, id, buffer, sz);
-	lua_pushboolean(L, err);
+	lua_pushboolean(L, !err);
 	return 1;
 }
 

@@ -104,7 +104,7 @@ end
 
 skynet.register_protocol {
 	name = "socket",
-	id = 6,	-- PTYPE_SOCKET
+	id = skynet.PTYPE_SOCKET,	-- PTYPE_SOCKET = 6
 	unpack = driver.unpack,
 	dispatch = function (_, _, t, n1, n2, data)
 		socket_message[t](n1,n2,data)
@@ -156,7 +156,7 @@ function socket.close(fd)
 		suspend(s)
 	end
 	if s.buffer then
-		driver.clear(s.buffer)
+		driver.clear(s.buffer,buffer_pool)
 	end
 	assert(s.lock_set == nil or next(s.lock_set) == nil)
 	socket_pool[id] = nil
@@ -230,16 +230,15 @@ function socket.lock(id)
 	local s = socket_pool[id]
 	assert(s)
 	local lock_set = s.lock
-	local co = coroutine.running()
 	if not lock_set then
 		lock_set = {}
 		s.lock = lock_set
-		lock_set[co] = true
-	elseif next(lock_set) == nil then
-		lock_set[co] = true
+	end
+	local co = coroutine.running()
+	if #lock_set == 0 then
+		lock_set[1] = co
 	else
-		assert(lock_set[co] == nil)
-		lock_set[co] = true
+		table.insert(lock_set, co)
 		skynet.wait()
 	end
 end
@@ -250,18 +249,11 @@ function socket.unlock(id)
 	local lock_set = s.lock
 	assert(lock_set)
 	local co = coroutine.running()
-	assert(lock_set[co])
-	lock_set[co] = nil
-	while true do
-		co = next(lock_set)
-		if co == nil then
-			break
-		end
-		if skynet.wakeup(co) then
-			break
-		else
-			lock_set[co] = nil
-		end
+	assert(lock_set[1] == co)
+	table.remove(lock_set,1)
+	co = lock_set[1]
+	if co then
+		skynet.wakeup(co)
 	end
 end
 
@@ -270,7 +262,7 @@ end
 function socket.abandon(id)
 	local s = socket_pool[id]
 	if s and s.buffer then
-		driver.clear(s.buffer)
+		driver.clear(s.buffer,buffer_pool)
 	end
 	socket_pool[id] = nil
 end

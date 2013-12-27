@@ -11,10 +11,10 @@
 #define PTYPE_SYSTEM 4
 #define PTYPE_HARBOR 5
 #define PTYPE_SOCKET 6
-// don't use these id
-#define PTYPE_RESERVED_0 7	
-#define PTYPE_RESERVED_1 8
-// read lualib/skynet.lua
+// read lualib/skynet.lua lualib/simplemonitor.lua
+#define PTYPE_RESERVED_ERROR 7	
+// read lualib/skynet.lua lualib/mqueue.lua
+#define PTYPE_RESERVED_QUEUE 8
 #define PTYPE_RESERVED_DEBUG 9
 #define PTYPE_RESERVED_LUA 10
 
