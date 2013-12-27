@@ -37,6 +37,7 @@ forward_message(int type, bool padding, struct socket_message * result) {
 		if (result->data) {
 			sz += strlen(result->data) + 1;
 		} else {
+			result->data = "";
 			sz += 1;
 		}
 	}
@@ -118,6 +119,12 @@ int
 skynet_socket_connect(struct skynet_context *ctx, const char *host, int port) {
 	uint32_t source = skynet_context_handle(ctx);
 	return socket_server_connect(SOCKET_SERVER, source, host, port);
+}
+
+int 
+skynet_socket_block_connect(struct skynet_context *ctx, const char *host, int port) {
+	uint32_t source = skynet_context_handle(ctx);
+	return socket_server_block_connect(SOCKET_SERVER, source, host, port);
 }
 
 int 

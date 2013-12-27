@@ -189,8 +189,16 @@ dispatch_message(struct gate *g, struct connection *c, int id, void * data, int 
 		if (size < 0) {
 			return;
 		} else if (size > 0) {
-			_forward(g, c, size);
-			databuffer_reset(&c->buffer);
+			if (size >= 0x1000000) {
+				struct skynet_context * ctx = g->ctx;
+				databuffer_clear(&c->buffer,&g->mp);
+				skynet_socket_close(ctx, id);
+				skynet_error(ctx, "Recv socket message > 16M");
+				return;
+			} else {
+				_forward(g, c, size);
+				databuffer_reset(&c->buffer);
+			}
 		}
 	}
 }
@@ -292,7 +300,7 @@ _cb(struct skynet_context * ctx, void * ud, int type, int session, uint32_t sour
 	return 0;
 }
 
-static void
+static int
 start_listen(struct gate *g, char * listen_addr) {
 	struct skynet_context * ctx = g->ctx;
 	char * portstr = strchr(listen_addr,':');
@@ -302,22 +310,28 @@ start_listen(struct gate *g, char * listen_addr) {
 		port = strtol(listen_addr, NULL, 10);
 		if (port <= 0) {
 			skynet_error(ctx, "Invalid gate address %s",listen_addr);
-			return;
+			return 1;
 		}
 	} else {
 		port = strtol(portstr + 1, NULL, 10);
 		if (port <= 0) {
 			skynet_error(ctx, "Invalid gate address %s",listen_addr);
-			return;
+			return 1;
 		}
 		portstr[0] = '\0';
 		host = listen_addr;
 	}
 	g->listen_id = skynet_socket_listen(ctx, host, port, BACKLOG);
+	if (g->listen_id < 0) {
+		return 1;
+	}
+	return 0;
 }
 
 int
 gate_init(struct gate *g , struct skynet_context * ctx, char * parm) {
+	if (parm == NULL)
+		return 1;
 	int max = 0;
 	int buffer = 0;
 	int sz = strlen(parm)+1;
@@ -370,8 +384,7 @@ gate_init(struct gate *g , struct skynet_context * ctx, char * parm) {
 	g->client_tag = client_tag;
 	g->header_size = header=='S' ? 2 : 4;
 
-	start_listen(g,binding);
 	skynet_callback(ctx,g,_cb);
 
-	return 0;
+	return start_listen(g,binding);
 }

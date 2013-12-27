@@ -33,11 +33,18 @@ struct worker_parm {
 #define CHECK_ABORT if (skynet_context_total()==0) break;
 
 static void
+create_thread(pthread_t *thread, void *(*start_routine) (void *), void *arg) {
+	if (pthread_create(thread,NULL, start_routine, arg)) {
+		fprintf(stderr, "Create thread failed");
+		exit(1);
+	}
+}
+
+static void
 wakeup(struct monitor *m, int busy) {
 	if (m->sleep >= m->count - busy) {
-		pthread_mutex_lock(&m->mutex);
+		// signal sleep worker, "spurious wakeup" is harmless
 		pthread_cond_signal(&m->cond);
-		pthread_mutex_unlock(&m->mutex);
 	}
 }
 
@@ -48,12 +55,26 @@ _socket(void *p) {
 		int r = skynet_socket_poll();
 		if (r==0)
 			break;
-		if (r<0)
+		if (r<0) {
+			CHECK_ABORT
 			continue;
-		// FIXME: wakeup will kill some performance when lots of connections
+		}
 		wakeup(m,0);
 	}
 	return NULL;
+}
+
+static void
+free_monitor(struct monitor *m) {
+	int i;
+	int n = m->count;
+	for (i=0;i<n;i++) {
+		skynet_monitor_delete(m->m[i]);
+	}
+	pthread_mutex_destroy(&m->mutex);
+	pthread_cond_destroy(&m->cond);
+	free(m->m);
+	free(m);
 }
 
 static void *
@@ -62,17 +83,15 @@ _monitor(void *p) {
 	int i;
 	int n = m->count;
 	for (;;) {
+		CHECK_ABORT
 		for (i=0;i<n;i++) {
 			skynet_monitor_check(m->m[i]);
 		}
-		CHECK_ABORT
-		sleep(5);
+		for (i=0;i<5;i++) {
+			CHECK_ABORT
+			sleep(1);
+		}
 	}
-	for (i=0;i<n;i++) {
-		skynet_monitor_delete(m->m[i]);
-	}
-	free(m->m);
-	free(m);
 
 	return NULL;
 }
@@ -83,9 +102,13 @@ _timer(void *p) {
 	for (;;) {
 		skynet_updatetime();
 		CHECK_ABORT
-		wakeup(m,1);
+		wakeup(m,m->count-1);
 		usleep(2500);
 	}
+	// wakeup socket thread
+	skynet_socket_exit();
+	// wakeup all worker thread
+	pthread_cond_broadcast(&m->cond);
 	return NULL;
 }
 
@@ -98,11 +121,17 @@ _worker(void *p) {
 	for (;;) {
 		if (skynet_context_message_dispatch(sm)) {
 			CHECK_ABORT
-			pthread_mutex_lock(&m->mutex);
-			++ m->sleep;
-			pthread_cond_wait(&m->cond, &m->mutex);
-			-- m->sleep;
-			pthread_mutex_unlock(&m->mutex);
+			if (pthread_mutex_lock(&m->mutex) == 0) {
+				++ m->sleep;
+				// "spurious wakeup" is harmless,
+				// because skynet_context_message_dispatch() can be call at any time.
+				pthread_cond_wait(&m->cond, &m->mutex);
+				-- m->sleep;
+				if (pthread_mutex_unlock(&m->mutex)) {
+					fprintf(stderr, "unlock mutex error");
+					exit(1);
+				}
+			}
 		} 
 	}
 	return NULL;
@@ -120,25 +149,33 @@ _start(int thread) {
 	m->m = malloc(thread * sizeof(struct skynet_monitor *));
 	int i;
 	for (i=0;i<thread;i++) {
-		m->m[i] = skynet_monitor_new(i);
+		m->m[i] = skynet_monitor_new();
 	}
-	pthread_mutex_init(&m->mutex, NULL);
-	pthread_cond_init(&m->cond, NULL);
+	if (pthread_mutex_init(&m->mutex, NULL)) {
+		fprintf(stderr, "Init mutex error");
+		exit(1);
+	}
+	if (pthread_cond_init(&m->cond, NULL)) {
+		fprintf(stderr, "Init cond error");
+		exit(1);
+	}
 
-	pthread_create(&pid[0], NULL, _monitor, m);
-	pthread_create(&pid[1], NULL, _timer, m);
-	pthread_create(&pid[2], NULL, _socket, m);
+	create_thread(&pid[0], _monitor, m);
+	create_thread(&pid[1], _timer, m);
+	create_thread(&pid[2], _socket, m);
 
 	struct worker_parm wp[thread];
 	for (i=0;i<thread;i++) {
 		wp[i].m = m;
 		wp[i].id = i;
-		pthread_create(&pid[i+3], NULL, _worker, &wp[i]);
+		create_thread(&pid[i+3], _worker, &wp[i]);
 	}
 
-	for (i=1;i<thread+3;i++) {
+	for (i=0;i<thread+3;i++) {
 		pthread_join(pid[i], NULL); 
 	}
+
+	free_monitor(m);
 }
 
 static int
@@ -159,6 +196,13 @@ skynet_start(struct skynet_config * config) {
 	skynet_timer_init();
 	skynet_socket_init();
 
+	struct skynet_context *ctx;
+	ctx = skynet_context_new("logger", config->logger);
+	if (ctx == NULL) {
+		fprintf(stderr,"launch logger error");
+		exit(1);
+	}
+
 	if (config->standalone) {
 		if (_start_master(config->standalone)) {
 			fprintf(stderr, "Init fail : mater");
@@ -171,12 +215,6 @@ skynet_start(struct skynet_config * config) {
 		return;
 	}
 
-	struct skynet_context *ctx;
-	ctx = skynet_context_new("logger", config->logger);
-	if (ctx == NULL) {
-		fprintf(stderr,"launch logger error");
-		exit(1);
-	}
 	ctx = skynet_context_new("localcast", NULL);
 	if (ctx == NULL) {
 		fprintf(stderr,"launch local cast error");

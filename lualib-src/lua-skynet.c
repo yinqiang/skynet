@@ -32,15 +32,7 @@ struct stat {
 static void
 _stat_begin(struct stat *S, struct timespec *ti) {
 	S->count++;
-#if !defined(__APPLE__)
-	clock_gettime(CLOCK_THREAD_CPUTIME_ID, ti);
-#else
-	struct task_thread_times_info aTaskInfo;
-	mach_msg_type_number_t aTaskInfoCount = TASK_THREAD_TIMES_INFO_COUNT;
-	assert(KERN_SUCCESS == task_info(mach_task_self(), TASK_THREAD_TIMES_INFO, (task_info_t )&aTaskInfo, &aTaskInfoCount));
-	ti->tv_sec = aTaskInfo.user_time.seconds;
-	ti->tv_nsec = aTaskInfo.user_time.microseconds * 1000;
-#endif
+	current_time(ti);
 }
 
 inline static void
@@ -96,6 +88,12 @@ _cb(struct skynet_context * context, void * ud, int type, int session, uint32_t 
 	int r = lua_pcall(L, 5, 0 , trace);
 
 	_stat_end(S, &ti);
+
+	struct trace_info *tti = trace_yield(S->trace);
+	if (tti) {
+		skynet_error(context, "Untraced time %f",  trace_delete(S->trace, tti));
+	}
+
 	if (r == LUA_OK) {
 		if (S->lua->reload) {
 			skynet_callback(context, NULL, 0);
@@ -309,7 +307,9 @@ _send(lua_State *L) {
 		luaL_error(L, "skynet.send invalid param %s", lua_type(L,4));
 	}
 	if (session < 0) {
-		luaL_error(L, "skynet.send session (%d) < 0", session);
+		// send to invalid address
+		// todo: maybe throw error is better
+		return 0;
 	}
 	lua_pushinteger(L,session);
 	return 1;
@@ -398,6 +398,9 @@ static int
 _trace_new(lua_State *L) {
 	struct trace_pool *p = lua_touserdata(L,1);
 	struct trace_info *t = trace_new(p);
+	if (t==NULL) {
+		return luaL_error(L, "Last trace didn't close");
+	}
 	lua_pushlightuserdata(L,t);
 	return 1;
 }
@@ -451,19 +454,10 @@ _reload(lua_State *L) {
 	return 0;
 }
 
-// define in lua-remoteobj.c
-int remoteobj_init(lua_State *L);
-
 int
 luaopen_skynet_c(lua_State *L) {
 	luaL_checkversion(L);
 	
-	luaL_Reg pack[] = {
-		{ "pack", _luaseri_pack },
-		{ "unpack", _luaseri_unpack },
-		{ NULL, NULL },
-	};
-
 	luaL_Reg l[] = {
 		{ "send" , _send },
 		{ "genid", _genid },
@@ -474,12 +468,13 @@ luaopen_skynet_c(lua_State *L) {
 		{ "tostring", _tostring },
 		{ "harbor", _harbor },
 		{ "context", _context },
+		{ "pack", _luaseri_pack },
+		{ "unpack", _luaseri_unpack },
 		{ NULL, NULL },
 	};
 
 	luaL_Reg l2[] = {
 		{ "stat", _stat },
-		{ "remote_init", remoteobj_init },
 		{ "trace_new", _trace_new },
 		{ "trace_delete", _trace_delete },
 		{ "trace_switch", _trace_switch },
@@ -488,10 +483,7 @@ luaopen_skynet_c(lua_State *L) {
 		{ NULL, NULL },
 	};
 
-	lua_createtable(L, 0, (sizeof(pack) + sizeof(l) + sizeof(l2))/sizeof(luaL_Reg)-1);
-	lua_newtable(L);
-	lua_pushstring(L,"__remote");
-	luaL_setfuncs(L,pack,2);
+	lua_createtable(L, 0, (sizeof(l) + sizeof(l2))/sizeof(luaL_Reg)-1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "skynet_lua");
 	struct snlua *lua = lua_touserdata(L,-1);

@@ -120,12 +120,14 @@ skynet_context_new(const char * name, const char *param) {
 		}
 		skynet_mq_force_push(queue);
 		if (ret) {
-			printf("[:%x] launch %s %s\n",ret->handle, name, param ? param : "");
+			skynet_error(ret, "LAUNCH %s %s", name, param ? param : "");
 		}
 		return ret;
 	} else {
+		skynet_error(ctx, "FAILED launch %s", name);
 		skynet_context_release(ctx);
 		skynet_handle_retire(ctx->handle);
+		skynet_mq_release(queue);
 		return NULL;
 	}
 }
@@ -355,11 +357,14 @@ skynet_queryname(struct skynet_context * context, const char * name) {
 
 static void
 handle_exit(struct skynet_context * context, uint32_t handle) {
-	if (G_NODE.monitor_exit) {
-		skynet_send(context,  handle, G_NODE.monitor_exit, PTYPE_CLIENT, 0, NULL, 0);
-	}
 	if (handle == 0) {
 		handle = context->handle;
+		skynet_error(context, "KILL self");
+	} else {
+		skynet_error(context, "KILL :%0x", handle);
+	}
+	if (G_NODE.monitor_exit) {
+		skynet_send(context,  handle, G_NODE.monitor_exit, PTYPE_CLIENT, 0, NULL, 0);
 	}
 	skynet_handle_retire(handle);
 }
@@ -380,6 +385,14 @@ skynet_command(struct skynet_context * context, const char * cmd , const char * 
 			return NULL;
 		}
 		skynet_mq_lock(context->queue, context->session_id+1);
+		return NULL;
+	}
+
+	if (strcmp(cmd,"UNLOCK") == 0) {
+		if (context->init == false) {
+			return NULL;
+		}
+		skynet_mq_unlock(context->queue);
 		return NULL;
 	}
 
@@ -467,7 +480,6 @@ skynet_command(struct skynet_context * context, const char * cmd , const char * 
 		args = strsep(&args, "\r\n");
 		struct skynet_context * inst = skynet_context_new(mod,args);
 		if (inst == NULL) {
-			fprintf(stderr, "Launch %s %s failed\n",mod,args);
 			return NULL;
 		} else {
 			_id_to_hex(context->result, inst->handle);
@@ -531,7 +543,12 @@ skynet_command(struct skynet_context * context, const char * cmd , const char * 
 	if (strcmp(cmd,"MONITOR") == 0) {
 		uint32_t handle=0;
 		if (param == NULL || param[0] == '\0') {
-			handle = context->handle;
+			if (G_NODE.monitor_exit) {
+				// return current monitor serivce
+				sprintf(context->result, ":%x", G_NODE.monitor_exit);
+				return context->result;
+			}
+			return NULL;
 		} else {
 			if (param[0] == ':') {
 				handle = strtoul(param+1, NULL, 16);
@@ -552,7 +569,11 @@ skynet_command(struct skynet_context * context, const char * cmd , const char * 
 void 
 skynet_forward(struct skynet_context * context, uint32_t destination) {
 	assert(context->forward == 0);
-	context->forward = destination;
+	if (destination == 0) {
+		context->forward = context->handle;
+	} else {
+		context->forward = destination;
+	}
 }
 
 static void
