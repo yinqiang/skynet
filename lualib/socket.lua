@@ -38,7 +38,7 @@ socket_message[1] = function(id, size, data)
 	local s = socket_pool[id]
 	if s == nil then
 		print("socket: drop package from " .. id)
-		driver.drop(data)
+		driver.drop(data, size)
 		return
 	end
 
@@ -93,10 +93,13 @@ end
 
 -- SKYNET_SOCKET_TYPE_ERROR = 5
 socket_message[5] = function(id)
-	print("error on ", id)
 	local s = socket_pool[id]
 	if s == nil then
+		print("socket: error on unknown", id)
 		return
+	end
+	if s.connected then
+		print("socket: error on", id)
 	end
 	s.connected = false
 	wakeup(s)
@@ -146,20 +149,47 @@ function socket.start(id, func)
 	return connect(id, func)
 end
 
-function socket.close(fd)
+function socket.shutdown(id)
+	local s = socket_pool[id]
+	if s then
+		if s.buffer then
+			driver.clear(s.buffer,buffer_pool)
+		end
+		if s.connected then
+			driver.close(id)
+		end
+	end
+end
+
+function socket.close(id)
 	local s = socket_pool[id]
 	if s == nil then
 		return
 	end
 	if s.connected then
 		driver.close(s.id)
-		suspend(s)
+		-- notice: call socket.close in __gc should be carefully,
+		-- because skynet.wait never return in __gc, so driver.clear may not be called
+		if s.co then
+			-- reading this socket on another coroutine
+			assert(not s.closing)
+			s.closing = coroutine.running()
+			skynet.wait()
+		else
+			suspend(s)
+		end
+		s.connected = false
 	end
-	if s.buffer then
-		driver.clear(s.buffer,buffer_pool)
-	end
+	socket.shutdown(id)
 	assert(s.lock_set == nil or next(s.lock_set) == nil)
 	socket_pool[id] = nil
+end
+
+local function close_socket(s)
+	if s.closing then
+		skynet.wakeup(s.closing)
+	end
+	return driver.readall(s.buffer, buffer_pool)
 end
 
 function socket.read(id, sz)
@@ -170,7 +200,7 @@ function socket.read(id, sz)
 		return ret
 	end
 	if not s.connected then
-		return false, driver.readall(s.buffer, buffer_pool)
+		return false, close_socket(s)
 	end
 
 	assert(not s.read_required)
@@ -180,7 +210,7 @@ function socket.read(id, sz)
 	if ret then
 		return ret
 	else
-		return false, driver.readall(s.buffer, buffer_pool)
+		return false, close_socket(s)
 	end
 end
 
@@ -188,13 +218,14 @@ function socket.readall(id)
 	local s = socket_pool[id]
 	assert(s)
 	if not s.connected then
-		return driver.readall(s.buffer, buffer_pool)
+		local r = close_socket(s)
+		return r ~= "" and r
 	end
 	assert(not s.read_required)
 	s.read_required = true
 	suspend(s)
 	assert(s.connected == false)
-	return driver.readall(s.buffer, buffer_pool)
+	return close_socket(s)
 end
 
 function socket.readline(id, sep)
@@ -206,7 +237,7 @@ function socket.readline(id, sep)
 		return ret
 	end
 	if not s.connected then
-		return false, driver.readall(s.buffer, buffer_pool)
+		return false, close_socket(s)
 	end
 	assert(not s.read_required)
 	s.read_required = sep
@@ -214,11 +245,26 @@ function socket.readline(id, sep)
 	if s.connected then
 		return driver.readline(s.buffer, buffer_pool, sep)
 	else
-		return false, driver.readall(s.buffer, buffer_pool)
+		return false, close_socket(s)
 	end
 end
 
+function socket.block(id)
+	local s = socket_pool[id]
+	if not s or not s.connected then
+		return false
+	end
+	assert(not s.read_required)
+	s.read_required = 0
+	suspend(s)
+	if not s.connected and s.closing then
+		skynet.wakeup(s.closing)
+	end
+	return s.connected
+end
+
 socket.write = assert(driver.send)
+socket.lwrite = assert(driver.lsend)
 
 function socket.invalid(id)
 	return socket_pool[id] == nil
@@ -234,10 +280,10 @@ function socket.lock(id)
 		lock_set = {}
 		s.lock = lock_set
 	end
-	local co = coroutine.running()
 	if #lock_set == 0 then
-		lock_set[1] = co
+		lock_set[1] = true
 	else
+		local co = coroutine.running()
 		table.insert(lock_set, co)
 		skynet.wait()
 	end
@@ -246,19 +292,16 @@ end
 function socket.unlock(id)
 	local s = socket_pool[id]
 	assert(s)
-	local lock_set = s.lock
-	assert(lock_set)
-	local co = coroutine.running()
-	assert(lock_set[1] == co)
+	local lock_set = assert(s.lock)
 	table.remove(lock_set,1)
-	co = lock_set[1]
+	local co = lock_set[1]
 	if co then
 		skynet.wakeup(co)
 	end
 end
 
 -- abandon use to forward socket id to other service
--- you must call socket.accept(id) later in other service
+-- you must call socket.start(id) later in other service
 function socket.abandon(id)
 	local s = socket_pool[id]
 	if s and s.buffer then

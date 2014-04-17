@@ -1,6 +1,5 @@
 #include <lua.h>
 #include <lauxlib.h>
-#include "luacompat52.h"
 
 #include <time.h>
 #include <unistd.h>
@@ -404,45 +403,77 @@ append_one(struct bson *bs, lua_State *L, const char *key, size_t sz) {
 }
 
 static inline int 
-bson_numstr( char *str, int i ) {
+bson_numstr( char *str, unsigned int i ) {
 	if ( i < MAX_NUMBER) {
 		memcpy( str, bson_numstrs[i], 4 );
 		return bson_numstr_len[i];
 	} else {
-		return sprintf( str,"%d", i );
+		return sprintf( str,"%u", i );
 	}
 }
 
 static void
 pack_dict(lua_State *L, struct bson *b, bool isarray) {
-	int arraydec = isarray ? 1 : 0;
 	int length = reserve_length(b);
 	lua_pushnil(L);
 	while(lua_next(L,-2) != 0) {
 		int kt = lua_type(L, -2);
-		char numberkey[8];
+		char numberkey[32];
 		const char * key = NULL;
 		size_t sz;
-		switch(kt) {
-		case LUA_TNUMBER:
-			sz = bson_numstr(numberkey, lua_tointeger(L,-2)-arraydec);
-			key = numberkey;			
-			break;
-		case LUA_TSTRING:
-			key = lua_tolstring(L,-2,&sz);
-			break;
-		default:
-			luaL_error(L, "Invalid key type : %s", lua_typename(L, kt));
-			return;
-		}
+		if (isarray) {
+			if (kt != LUA_TNUMBER) {
+				luaL_error(L, "Invalid array key type : %s", lua_typename(L, kt));
+				return;
+			}
+			sz = bson_numstr(numberkey, lua_tounsigned(L,-2)-1);
+			key = numberkey;
 
+			append_one(b, L, key, sz);
+			lua_pop(L,1);
+		} else {
+			switch(kt) {
+			case LUA_TNUMBER:
+				// copy key, don't change key type
+				lua_pushvalue(L,-2);
+				lua_insert(L,-2);
+				key = lua_tolstring(L,-2,&sz);
+				append_one(b, L, key, sz);
+				lua_pop(L,2);
+				break;
+			case LUA_TSTRING:
+				key = lua_tolstring(L,-2,&sz);
+				append_one(b, L, key, sz);
+				lua_pop(L,1);
+				break;
+			default:
+				luaL_error(L, "Invalid key type : %s", lua_typename(L, kt));
+				return;
+			}
+		}
+	}
+	write_byte(b,0);
+	write_length(b, b->size - length, length);
+}
+
+static void
+pack_sorted_dict(lua_State *L, struct bson *b, int n) {
+	int length = reserve_length(b);
+	int i;
+	for (i=0;i<n;i+=2) {
+		size_t sz;
+		const char * key = lua_tolstring(L, i+1, &sz);
+		if (key == NULL) {
+			luaL_error(L, "Argument %d need a string", i+1);
+		}
+		lua_pushvalue(L, i+2);
 		append_one(b, L, key, sz);
 		lua_pop(L,1);
 	}
 	write_byte(b,0);
 	write_length(b, b->size - length, length);
 }
-
+ 
 static int
 ltostring(lua_State *L) {
 	size_t sz = lua_rawlen(L, 1);
@@ -790,16 +821,8 @@ ldecode(lua_State *L) {
 	return 1;
 }
 
-static int
-lencode(lua_State *L) {
-	struct bson b;
-	bson_create(&b);
-	lua_settop(L,1);
-	luaL_checktype(L, 1, LUA_TTABLE);
-	pack_dict(L, &b, false);
-	void * ud = lua_newuserdata(L, b.size);
-	memcpy(ud, b.ptr, b.size);
-	bson_destroy(&b);
+static void
+bson_meta(lua_State *L) {
 	if (luaL_newmetatable(L, "bson")) {
 		luaL_Reg l[] = {
 			{ "decode", ldecode },
@@ -816,6 +839,36 @@ lencode(lua_State *L) {
 		lua_setfield(L, -2, "__newindex");
 	}
 	lua_setmetatable(L, -2);
+}
+
+static int
+lencode(lua_State *L) {
+	struct bson b;
+	bson_create(&b);
+	lua_settop(L,1);
+	luaL_checktype(L, 1, LUA_TTABLE);
+	pack_dict(L, &b, false);
+	void * ud = lua_newuserdata(L, b.size);
+	memcpy(ud, b.ptr, b.size);
+	bson_destroy(&b);
+	bson_meta(L);
+	return 1;
+}
+
+static int
+lencode_order(lua_State *L) {
+	struct bson b;
+	bson_create(&b);
+	int n = lua_gettop(L);
+	if (n%2 != 0) {
+		return luaL_error(L, "Invalid ordered dict");
+	}
+	pack_sorted_dict(L, &b, n);
+	lua_settop(L,1);
+	void * ud = lua_newuserdata(L, b.size);
+	memcpy(ud, b.ptr, b.size);
+	bson_destroy(&b);
+	bson_meta(L);
 	return 1;
 }
 
@@ -1107,6 +1160,7 @@ luaopen_bson(lua_State *L) {
 	}
 	luaL_Reg l[] = {
 		{ "encode", lencode },
+		{ "encode_order", lencode_order },
 		{ "date", ldate },
 		{ "timestamp", ltimestamp  },
 		{ "regex", lregex },

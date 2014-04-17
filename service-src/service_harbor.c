@@ -401,6 +401,10 @@ _remote_send_handle(struct harbor *h, uint32_t source, uint32_t destination, int
 		cookie.session = (uint32_t)session;
 		_send_remote(context, fd, msg,sz,&cookie);
 	} else {
+		// throw an error return to source
+		if (session != 0) {
+			skynet_send(context, destination, source, PTYPE_RESERVED_ERROR, session, NULL, 0);
+		}
 		skynet_error(context, "Drop message to harbor %d from %x to %x (session = %d, msgsz = %d)",harbor_id, source, destination,session,(int)sz);
 	}
 	return 0;
@@ -583,13 +587,13 @@ harbor_init(struct harbor *h, struct skynet_context *ctx, const char * args) {
 	int harbor_id = 0;
 	sscanf(args,"%s %s %d",master_addr, local_addr, &harbor_id);
 	h->master_addr = strdup(master_addr);
+	h->id = harbor_id;
 	h->master_fd = _connect_to(h, master_addr, true);
 	if (h->master_fd == -1) {
 		fprintf(stderr, "Harbor: Connect to master failed\n");
 		exit(1);
 	}
 	h->local_addr = strdup(local_addr);
-	h->id = harbor_id;
 
 	_launch_gate(ctx, local_addr);
 	skynet_callback(ctx, h, _mainloop);

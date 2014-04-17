@@ -563,6 +563,12 @@ skynet_command(struct skynet_context * context, const char * cmd , const char * 
 		return NULL;
 	}
 
+	if (strcmp(cmd, "MQLEN") == 0) {
+		int len = skynet_mq_length(context->queue);
+		sprintf(context->result, "%d", len);
+		return context->result;
+	}
+
 	return NULL;
 }
 
@@ -588,10 +594,10 @@ _filter_args(struct skynet_context * context, int type, int *session, void ** da
 	}
 
 	if (needcopy && *data) {
-  	char * msg = malloc(*sz+1);
+		char * msg = malloc(*sz+1);
 		memcpy(msg, *data, *sz);
 		msg[*sz] = '\0';
-  	*data = msg;
+		*data = msg;
 	}
 
 	assert((*sz & HANDLE_MASK) == *sz);
@@ -624,7 +630,7 @@ skynet_send(struct skynet_context * context, uint32_t source, uint32_t destinati
 
 		if (skynet_context_push(destination, &smsg)) {
 			free(data);
-			skynet_error(NULL, "Drop message from %x to %x (type=%d)(size=%d)", source, destination, type, (int)(sz & HANDLE_MASK));
+			skynet_error(NULL, "Drop message from %x to %x (type=%d)(size=%d)", source, destination, type&0xff, (int)(sz & HANDLE_MASK));
 			return -1;
 		}
 	}

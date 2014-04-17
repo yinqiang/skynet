@@ -1,6 +1,5 @@
 #include "skynet_imp.h"
 #include "skynet_env.h"
-#include "luacompat52.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +38,7 @@ optstring(const char *key,const char * opt) {
 	if (str == NULL) {
 		if (opt) {
 			skynet_setenv(key, opt);
+			opt = skynet_getenv(key);
 		}
 		return opt;
 	}
@@ -105,6 +105,10 @@ main(int argc, char *argv[]) {
 	} 
 	_init_env(L);
 
+#ifdef LUA_CACHELIB
+  printf("Skynet lua code cache enable\n");
+#endif
+
 	const char *path = optstring("lua_path","./lualib/?.lua;./lualib/?/init.lua");
 	setenv("LUA_PATH",path,1);
 	const char *cpath = optstring("lua_cpath","./luaclib/?.so");
@@ -112,7 +116,7 @@ main(int argc, char *argv[]) {
 	optstring("luaservice","./service/?.lua");
 
 	config.thread =  optint("thread",8);
-	config.module_path = optstring("cpath","./service/?.so");
+	config.module_path = optstring("cpath","./cservice/?.so");
 	config.logger = optstring("logger",NULL);
 	config.harbor = optint("harbor", 1);
 	config.master = optstring("master","127.0.0.1:2012");

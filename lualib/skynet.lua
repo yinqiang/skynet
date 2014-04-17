@@ -46,6 +46,9 @@ local watching_service = {}
 local watching_session = {}
 local error_queue = {}
 
+-- timing remote call, turn off by default. Use skynet.timing_call() to turn on.
+local timing_call = nil
+
 -- suspend is function
 local suspend
 
@@ -113,7 +116,7 @@ local function co_create(f)
 			f(...)
 			while true do
 				f = nil
-				coroutine_pool[#coroutine_pool] = co
+				coroutine_pool[#coroutine_pool+1] = co
 				f = coroutine_yield "EXIT"
 				f(coroutine_yield())
 			end
@@ -155,7 +158,7 @@ function suspend(co, result, command, param, size)
 		end
 		session_coroutine_id[co] = nil
 		session_coroutine_address[co] = nil
-		error(debug.traceback(co,command))
+		error(debug.traceback(co,tostring(command)))
 	end
 	if command == "CALL" then
 		c.trace_register(trace_handle, param)
@@ -321,7 +324,7 @@ function skynet.call(addr, typename, ...)
 	end
 	local session = c.send(addr, p.id , nil , p.pack(...))
 	if session == nil then
-		error("call to invalid address " .. tostring(addr))
+		error("call to invalid address " .. skynet.address(addr))
 	end
 	return p.unpack(yield_call(addr, session))
 end
@@ -332,7 +335,7 @@ function skynet.blockcall(addr, typename , ...)
 	local session = c.send(addr, p.id , nil , p.pack(...))
 	if session == nil then
 		c.command("UNLOCK")
-		error("call to invalid address " .. tostring(addr))
+		error("call to invalid address " .. skynet.address(addr))
 	end
 	return p.unpack(yield_call(addr, session))
 end
@@ -384,9 +387,26 @@ function skynet.fork(func,...)
 	table.insert(fork_queue, co)
 end
 
+local function timing(session, source, ti)
+	if ti == nil then
+		return
+	end
+	local t = timing_call[source]
+	if t == nil then
+		t = { n = 1, ti = ti }
+		timing_call[source] = t
+	else
+		t.n = t.n + 1
+		t.ti = t.ti + ti
+	end
+end
+
 local function raw_dispatch_message(prototype, msg, sz, session, source, ...)
 	-- skynet.PTYPE_RESPONSE = 1, read skynet.h
 	if prototype == 1 then
+		if timing_call then
+			timing(session, source, ...)
+		end
 		local co = session_id_coroutine[session]
 		if co == "BREAK" then
 			session_id_coroutine[session] = nil
@@ -404,7 +424,7 @@ local function raw_dispatch_message(prototype, msg, sz, session, source, ...)
 			local co = co_create(f)
 			session_coroutine_id[co] = session
 			session_coroutine_address[co] = source
-			suspend(co, coroutine.resume(co, session,source, p.unpack(msg,sz, ...)))
+			suspend(co, coroutine.resume(co, session,source, p.unpack(msg,sz,...)))
 		else
 			print("Unknown request :" , p.unpack(msg,sz))
 			error(string.format("Can't dispatch type %s : ", p.name))
@@ -424,13 +444,13 @@ local function dispatch_message(...)
 		if not fork_succ then
 			if succ then
 				succ = false
-				err = fork_err
+				err = tostring(fork_err)
 			else
-				err = err .. "\n" .. fork_err
+				err = tostring(err) .. "\n" .. tostring(fork_err)
 			end
 		end
 	end
-	assert(succ, err)
+	assert(succ, tostring(err))
 end
 
 function skynet.newservice(name, ...)
@@ -490,11 +510,23 @@ function skynet.query_group(handle)
 end
 
 function skynet.address(addr)
-	return string.format(":%x",addr)
+	if type(addr) == "number" then
+		return string.format(":%x",addr)
+	else
+		return tostring(addr)
+	end
 end
 
 function skynet.harbor(addr)
 	return c.harbor(addr)
+end
+
+function skynet.error(...)
+	local t = {...}
+	for i=1,#t do
+		t[i] = tostring(t[i])
+	end
+	return c.error(table.concat(t, " "))
 end
 
 ----- debug
@@ -526,6 +558,7 @@ function dbgcmd.STAT()
 	query_state(stat, "count")
 	query_state(stat, "time")
 	stat.boottime = debug.getregistry().skynet_boottime
+	stat.mqlen = skynet.mqlen()
 	skynet.ret(skynet.pack(stat))
 end
 
@@ -534,6 +567,18 @@ function dbgcmd.INFO()
 		skynet.ret(skynet.pack(internal_info_func()))
 	else
 		skynet.ret(skynet.pack(nil))
+	end
+end
+
+function dbgcmd.TIMING()
+	if timing_call then
+		skynet.ret(skynet.pack(timing_call))
+		-- turn off timing
+		timing_call = nil
+	else
+		-- turn on timing
+		timing_call = {}
+		skynet.ret(skynet.pack(timing_call))
 	end
 end
 
@@ -690,6 +735,20 @@ function skynet.monitor(service, query)
 	end
 	assert(monitor, "Monitor launch failed")
 	c.command("MONITOR", string.format(":%08x", monitor))
+end
+
+function skynet.mqlen()
+	return tonumber(c.command "MQLEN")
+end
+
+function skynet.timing_call(tc)
+	local ret = timing_call
+	timing_call = tc or {}
+	return ret
+end
+
+function skynet.timing_session(session)
+	return c.timing(session)
 end
 
 return skynet
